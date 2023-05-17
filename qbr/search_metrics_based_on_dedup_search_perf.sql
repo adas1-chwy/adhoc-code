@@ -61,3 +61,45 @@ group by 1,2,3,4); commit;
 
 /** The table was backfilled by running above queries for time 01/01/22 - 05/15/23 
 **/ 
+
+
+
+/** Below query to summarize search metrics based on this new search level table 
+
+*/ 
+
+
+select *, 
+        search_volume/distinct_session_w_search::float as searches_per_session,
+        sessions_with_purchase_search/distinct_session_w_search::float as session_level_cvr,
+        searches_with_product_impression/search_volume::float as searches_with_product_impression,
+        searches_with_product_click/search_volume::float as searches_product_click_rate,
+        searches_with_attributed_atc/search_volume::float as searches_with_ATC,
+        searches_with_attributed_order/search_volume::float as searches_cvr,
+        searches_with_exit/search_volume::float as exit_rate,
+        re_search_volume/search_volume::float as research_rate,
+        re_search_diff_keyword_volume/search_volume::float   as re_search_diff_keyword_rate   
+from 
+(
+SELECT 
+  cd.financial_calendar_reporting_year AS financial_year 
+  , financial_calendar_reporting_period AS financial_period 
+  , COUNT(DISTINCT t1.session_id) AS distinct_session_w_search 
+  , COUNT(DISTINCT t1.search_id) AS search_volume 
+  , COUNT(DISTINCT CASE WHEN product_impression > 0 THEN t1.search_id END) AS searches_with_product_impression 
+  , COUNT(DISTINCT CASE WHEN product_click > 0 THEN t1.search_id END) AS searches_with_product_click 
+  , COUNT(DISTINCT CASE WHEN allocated_atc > 0 THEN t1.search_id END) AS searches_with_attributed_atc 
+  , COUNT(DISTINCT CASE WHEN allocated_order > 0 THEN t1.search_id END) AS searches_with_attributed_order
+  , COUNT(DISTINCT CASE WHEN allocated_order > 0 THEN t1.session_id END) AS sessions_with_purchase_search
+  , COUNT(DISTINCT CASE WHEN is_exit > 0 THEN t1.search_id END) AS searches_with_exit
+  , count(distinct case when search_term != next_search_term and product_click = 0 then t1.search_id end) as re_search_diff_keyword_volume 
+  , count(distinct case when next_search_term is not null and product_click = 0 then t1.search_id end) as re_search_volume   
+FROM discovery_sandbox.ad_search_performance_qbr t1
+INNER JOIN cdm.common_date cd
+ON t1.session_date = cd.common_date_dttm
+WHERE 1=1 
+--  T1.SESSION_DATE >= '2023-01-01' 
+--AND t1.session_date <= '2023-05-04'
+AND cd.financial_calendar_reporting_year IN (2022,2023)
+GROUP BY 1,2 
+) ;
