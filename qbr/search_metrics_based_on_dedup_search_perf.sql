@@ -103,3 +103,58 @@ WHERE 1=1
 AND cd.financial_calendar_reporting_year IN (2022,2023)
 GROUP BY 1,2 
 ) ;
+
+
+
+
+
+
+
+
+
+
+
+
+/*** Created a new version of SEARCH_PERFORMANCE_DEDUPed 
+with the NULL search IDs fixed for the trend analysis to uncover what 
+changes in 2022 P04-> P05
+
+***/ 
+
+
+
+CREATE TABLE 
+  discovery_sandbox.ad_search_performance_qbr_ext cluster BY 
+  ( 
+    session_date 
+  )
+  AS
+SELECT 
+  * 
+  , CASE WHEN search_id_null_flag = 1 
+    THEN fixed_null_search_experience_type WHEN search_id_null_flag = 0 
+    THEN search_experience_type 
+  END AS search_experience_type_new
+FROM ( SELECT 
+      * 
+      , COALESCE(search_id, session_id||'-'||search_term) AS fixed_search_id 
+      , CASE WHEN search_id IS NULL 
+        THEN 1 
+        ELSE 0 
+      END AS search_id_null_flag 
+      , CASE WHEN search_id_null_flag = 1 
+        THEN first_value(search_experience_type ignore nulls) over ( 
+                                                                  PARTITION BY 
+                                                                    fixed_search_id 
+                                                                  ORDER BY hit_number ASC) 
+      END AS fixed_null_search_experience_type 
+      , cd.financial_calendar_reporting_year AS financial_year 
+      , cd.financial_calendar_reporting_period AS financial_period
+    FROM discovery_sandbox.search_performance_dedup t1
+    JOIN cdm.common_date cd
+    ON t1.session_date = cd.common_date_dttm
+    WHERE 
+      session_date BETWEEN '2022-04-01' AND '2022-08-31'
+    AND cd.financial_calendar_reporting_period IN ('P03','P04','P05','P06','P07') ) 
+;
+COMMIT;
