@@ -27,3 +27,4 @@ def PROPORTIONAL_Z_TEST(sample1_success, sample1_size, sample2_success, sample2_
 $$;
 commit;
 
+grant usage on function discovery_sandbox.PROPORTIONAL_Z_TEST(INT, INT, INT, INT) to x_base; commit;
