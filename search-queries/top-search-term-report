@@ -1,0 +1,181 @@
+with
+    -- PK: session_date, search_term
+    search_vol as (
+        select
+            t1.session_date,
+            t1.search_term,
+            t1.dw_site_id,
+            count(distinct t1.search_id) as search_volume
+        from
+            discovery_sandbox.search_performance_segment as t1
+        where
+            t1.session_date between dateadd ('day', -45, current_date) and current_date
+        group by
+            1,
+            2,
+            3
+    ),
+    -- PK: search_term
+    qualify_search_terms as (
+        select
+            dw_site_id,
+            search_term,
+            sum(search_volume) as sum_search_volume
+        from
+            search_vol as t1
+        group by
+            1,
+            2
+        having
+            case
+                when dw_site_id = '10' then sum_search_volume >= 100  -- for US site, only includes search term that had more than 100 searches in anyday in the past 45 days
+                else TRUE -- for CA site,include all search term for now
+            end
+    ),
+    -- PK: search_term
+    search_term_mc as (
+        select
+            search_term,
+            max(mc1) as mc1,
+            max(mc2) as mc2,
+            max(category_level1) as cl1,
+            max(category_level2) as cl2,
+            max(breed_size) as breed_size,
+            max(breed_type) as breed_type,
+            max(question_words_flag) as question_words_flag,
+            max(brand) as brand,
+            max(pet_type) as pet_type
+        from
+            discovery_sandbox.search_term_category
+        group by
+            1
+    )
+select
+    t1.session_date,
+    t1.device_category,
+    t1.new_customer_flag,
+    t1.session_auth_flag,
+    t1.search_category,
+    t1.search_redirect_flag,
+    t1.search_reformulation_flag,
+    t1.search_term,
+    case
+        when t1.dw_site_id = '60' then 'CA'
+        when t1.dw_site_id = '10' then 'US'
+    end as country_name,
+    max(t4.mc1) as mc1,
+    max(t4.mc2) as mc2,
+    max(t4.cl1) as cl1,
+    max(t4.cl2) as cl2,
+    max(t4.breed_size) as breed_size,
+    max(t4.breed_type) as breed_type,
+    max(t4.question_words_flag) as question_words_flag,
+    max(t4.brand) as brand,
+    max(t4.pet_type) as pet_type, 
+    count(distinct t1.search_id) as search_volume,
+    count(
+        distinct case
+            when t1.allocated_order > 0 then t1.search_id
+        end
+    ) as search_w_purchase,
+    sum(t1.allocated_order) as allocated_order_product,
+    sum(t1.allocated_revenue) as allocated_revenue,
+    count(
+        distinct case
+            when t1.search_category = 'Auto Complete' then t1.search_id
+        end
+    ) as auto_complete_search,
+    count(
+        distinct case
+            when t1.search_reformulation_flag then t1.search_id
+        end
+    ) as re_search,
+    count(
+        distinct case
+            when t1.is_exit_flag then t1.search_id
+        end
+    ) as exit_search,
+    count(
+        distinct case
+            when t1.search_nonengagement_flag then t1.search_id
+        end
+    ) as no_product_click_search,
+    count(
+        distinct case
+            when not t1.search_nonengagement_flag
+            and t1.allocated_order=0 then t1.search_id
+        end
+    ) as product_click_no_purchase_search,
+    count(
+        distinct case
+            when not t1.search_nonengagement_flag then t1.search_id
+        end
+    ) as product_click_search,
+    count(
+        distinct case
+            when not (
+                not t1.search_nonengagement_flag
+                or t1.is_exit_flag
+                or t1.search_reformulation_flag
+            ) then t1.search_id
+        end
+    ) as leave_exp_search,
+    count(
+        distinct case
+            when t1.facet_type is not null
+            and t1.hit_click > 0 then t1.search_id
+        end
+    ) as facet_usage_search,
+    count(
+        distinct case
+            when t1.widget_category = 'sub-cat-nav'
+            and t1.hit_click > 0 then t1.search_id
+        end
+    ) as subcat_nav_search,
+    count(
+        distinct case
+            when (
+                (
+                    t1.facet_type is not null
+                    or t1.widget_category = 'sub-cat-nav'
+                )
+                and t1.hit_click > 0
+            )
+            or t1.search_reformulation_flag then t1.search_id
+        end
+    ) as facet_subcat_re_search,
+    sum(t1.reciprocal_rank) as reciprocal_rank,
+    sum(t1.reciprocal_rank_product_engagement) as reciprocal_rank_product_engagement,
+    count(
+        distinct case
+            when search_experience_type in ('no-results', 'no-results-relaxed') then search_id
+        end
+    ) as no_result_search,
+    count(
+        distinct case
+            when search_experience_type = 'no-results' then search_id
+        end
+    ) as no_result_strict_search,
+    count(
+        distinct case
+            when search_experience_type = 'no-results-relaxed' then search_id
+        end
+    ) as no_result_relaxed_search,
+    sum(product_impression) as product_impression,
+    sum(product_engagement) as product_click
+from
+    discovery_sandbox.search_performance_segment as t1
+    join qualify_search_terms as t2 on t1.search_term = t2.search_term and t1.dw_site_id = t2.dw_site_id
+    left join search_term_mc as t4 on t1.search_term = t4.search_term
+where
+    t1.session_date between dateadd ('day', -45, current_date) and current_date
+group by
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
