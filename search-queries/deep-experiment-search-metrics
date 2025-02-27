@@ -1,0 +1,194 @@
+/**** tableau data source query for search metrics ***/ 
+
+WITH FILTERED_PID_BASE
+-- WE FIRST FILTER OUT SPILLOVERS I.E. SAME CUSTOMER (HERE PERSONALIZATION_ID) HAVING MORE THAN ONE 
+-- PK: SESSION_ID
+
+AS
+(
+  SELECT
+  T1.EXPERIMENT,
+  T1.SESSION_DATE AS SESSION_DATE_TA,
+  T1.SESSION_ID,
+  T1.PERSONALIZATION_ID,
+  T1.TEST_ARM,
+  T1.DATA_SOURCE,
+  T1.DEVICE_CATEGORY AS DATASET,
+  T1.experiment_seen_flag
+
+  FROM DISCOVERY_SANDBOX.prd_d_d_dis_expr_pool_segment AS T1
+
+  WHERE T1.SESSION_DATE BETWEEN <Parameters.Start Date> AND <Parameters.End Date>
+  AND T1.EXPERIMENT = <Parameters.Experiment>
+
+  QUALIFY COUNT(DISTINCT T1.TEST_ARM)
+  OVER (PARTITION BY T1.DATA_SOURCE,T1.PERSONALIZATION_ID) = 1
+)
+,
+-- WE USE THIS CTE TO TAKE USER'S PARAMETER INPUT OF TEST ARMS FILTER (MULTI-VALUES) IN TABLEAU (USER WANTS TO FILTER TO CERTAIN TEST ARMS)
+-- THEN WE INTERSECT USER'S INPUT TEST ARMS (CONTROL, VARAINT_01, ETC.) WITH THE VALID LIST OF TEST ARMS (CONTROL, VARAINT_01, VARIANT_02, ETC.)
+-- THEREFORE, WE CAN GET A FILTERED (BY USER INPUT) AND VALID (AFTER VALIDATION) LIST OF TEST ARMS TO BE USED IN THIS WHOLE QUERY
+--create temp table 
+UNIQUE_TEST_ARMS
+AS
+(
+  SELECT UPPER(TRIM(VALUE)) AS TEST_ARM
+  FROM TABLE(FLATTEN(SPLIT(<Parameters.Test Arms Filter (multi-values)>,',')))
+
+  INTERSECT
+
+  SELECT DISTINCT UPPER(TEST_ARM) as test_arm FROM FILTERED_PID_BASE
+)
+,
+-- HERE WE GET THE FINAL LIST OF SESSION_IDS OF THE EXPERIMENT AFTER FILTERING AND VALIDATION OF TEST_ARMS
+TEST_ARMS_FILTERED
+AS
+(
+  SELECT *
+  FROM FILTERED_PID_BASE AS T1
+  WHERE UPPER(T1.TEST_ARM) IN (SELECT TEST_ARM FROM UNIQUE_TEST_ARMS)
+  OR <Parameters.Test Arms Filter (multi-values)> REGEXP '[ ]*'
+)
+
+
+
+SELECT 
+        T2.TEST_ARM,
+        'Activated Sessions' as experiment_seen_flag,
+        search_experience_type_reporting as search_experience_type,
+        case when search_redirect_flag = true then 'Yes' else 'No' end as search_redirect,
+        case 
+        when (<Parameters.Dimension (Search Metrics)>) = 'experiment' THEN 'Overall'
+        when IDENTIFIER(<Parameters.Dimension (Search Metrics)>)::VARCHAR = 'true' THEN 'Y'
+        when IDENTIFIER(<Parameters.Dimension (Search Metrics)>)::VARCHAR = 'false' THEN 'N'
+        else IDENTIFIER(<Parameters.Dimension (Search Metrics)>)::VARCHAR end as dimension,    
+
+        case 
+        when (<Parameters.Dimension (Search Metrics) II>) = 'experiment' THEN 'Overall'
+        when IDENTIFIER(<Parameters.Dimension (Search Metrics) II>)::VARCHAR = 'true' THEN 'Y'
+        when IDENTIFIER(<Parameters.Dimension (Search Metrics) II>)::VARCHAR = 'false' THEN 'N'
+        else IDENTIFIER(<Parameters.Dimension (Search Metrics) II>)::VARCHAR 
+        end 
+        as dimension_2,  
+        t1.dw_site_name, 
+ 
+/*        new_customer_flag, */
+        COUNT(DISTINCT T1.SEARCH_ID) AS SEARCH_VOLUME,
+        COUNT(DISTINCT T1.SESSION_ID) AS SESSION_COUNT,
+        COUNT(DISTINCT(CASE WHEN search_re_search_flag = 1 THEN T1.SEARCH_ID END)) AS RE_SEARCH_VOLUME,
+        COUNT(DISTINCT(CASE WHEN search_re_searches_different_keyword_flag = 1 THEN T1.SEARCH_ID END)) AS RE_SEARCH_DIFFERENT_KEYWORD_VOLUME,
+        COUNT(DISTINCT(CASE WHEN autocomplete_search_flag = 1 THEN T1.SEARCH_ID END)) AS AUTOCOMPLETE_SEARCH_VOLUME,
+        COUNT(DISTINCT(CASE WHEN null_result_searches_flag = 1 THEN T1.SEARCH_ID END)) AS NULL_RESULTS_SEARCH_VOLUME,
+        COUNT(DISTINCT(CASE WHEN null_results_relaxed_searches_flag = 1 THEN T1.SEARCH_ID END)) AS NULL_RESULTS_RELAXED_SEARCH_VOLUME,
+        COUNT(DISTINCT(CASE WHEN null_result_searches_flag = 1 OR null_results_relaxed_searches_flag = 1 THEN T1.SEARCH_ID END)) AS NULL_RESULTS_SEARCH_VOLUME_ALL,
+        COUNT(DISTINCT(CASE WHEN search_with_atc_flag = 1 THEN T1.SEARCH_ID END)) AS SEARCH_W_ATC_VOLUME,
+        COUNT(DISTINCT(CASE WHEN search_with_product_click_flag = 1 THEN T1.SEARCH_ID END)) AS SEARCH_W_CLICK_SEARCH_VOLUME,
+        COUNT(DISTINCT(CASE WHEN search_with_purchase_flag_last_touch = 1 THEN T1.SEARCH_ID END)) AS SEARCH_W_PURCHASE_SEARCH_VOLUME,
+
+        COUNT(DISTINCT CASE WHEN search_with_product_engagement_flag = 1 THEN t1.search_id END) AS SEARCH_W_PRODUCT_ENGAGEMENT_VOLUME,
+        COUNT(DISTINCT CASE WHEN search_with_product_ATC_flag = 1 THEN t1.search_id END) AS SEARCH_W_PRODUCT_ATC_VOLUME,
+        COUNT(DISTINCT CASE WHEN search_with_product_ADDTOAUTOSHIP_flag = 1 THEN t1.search_id END) AS SEARCH_W_PRODUCT_ADDTOAUTOSHIP_VOLUME,
+        COUNT(DISTINCT CASE WHEN search_with_product_SELECT_flag = 1 THEN t1.search_id END) AS SEARCH_W_PRODUCT_SELECT_VOLUME,
+
+        -----search volume with attributed autoship orders using last touch attribution
+        COUNT(DISTINCT(CASE WHEN order_as_flag = true and search_allocated_orders_last_touch >0 THEN T1.SEARCH_ID END)) AS search_w_autoship_purchase_search_volume,
+        COUNT(DISTINCT(CASE WHEN ncna_flag = true and search_allocated_orders_last_touch >0 THEN T1.SEARCH_ID END)) AS search_w_ncna_purchase_search_volume,
+        COUNT(DISTINCT(CASE WHEN ecna_flag = true and search_allocated_orders_last_touch >0 THEN T1.SEARCH_ID END)) AS search_w_ecna_purchase_search_volume,
+        COUNT(DISTINCT(CASE WHEN ecea_new_sub_flag = true and search_allocated_orders_last_touch >0 THEN T1.SEARCH_ID END)) AS search_w_ecea_new_sub_purchase_search_volume,
+        -------------
+        count(distinct case when new_customer_flag=true then search_id end) as new_customer_search_volume,
+        count(distinct case when new_customer_flag=false then search_id end) as existing_customer_search_volume,
+        sum(multilevel_ndcg) as multilevel_ndcg_sum,
+        sum(click_reciprocal_rank) as click_reciprocal_rank_sum,
+        count(distinct(case when t1.search_with_exit = 1 then t1.search_id end)) as SEARCH_W_EXIT,
+        sum(search_allocated_revenue) as allocated_revenue,
+        sum(search_allocated_orders) as allocated_orders,
+        sum(search_allocated_units) as allocated_units,
+        sum(search_allocated_revenue_last_touch) as allocated_revenue_last_touch,
+        sum(search_allocated_orders_last_touch) as allocated_orders_last_touch,
+        sum(search_allocated_units_last_touch) as allocated_units_last_touch,
+        count(distinct case when search_w_sponsored_ad_purchases_last_touch = 1 then search_id end) as search_w_sponsored_ad_purchases,
+        case when device_category in ('android','ios') then count(distinct case when searches_with_sponsored_ads =1 then search_id end) else sum(searches_with_sponsored_ads) end as searches_with_sponsored_ads,
+        case when device_category in ('android','ios') then count(distinct case when searches_with_sponsored_ad_product_clicks =1 then search_id end) else sum(searches_with_sponsored_ad_product_clicks) end as searches_with_sponsored_ad_product_clicks,
+        case when device_category in ('android','ios') then count(distinct case when searches_with_sponsored_ad_product_engagement =1 then search_id end) else sum(searches_with_sponsored_ad_product_engagement) end as searches_with_sponsored_ad_product_engagement,
+
+        COUNT(DISTINCT(CASE WHEN autocomplete_search_flag = 1 AND search_with_purchase_flag_last_touch = 1 THEN t1.search_id END)) AS autocomplete_search_purchase_volume
+FROM discovery_sandbox.expr_search_metrics_segment_unified T1 
+JOIN TEST_ARMS_FILTERED AS T2
+ON T1.SESSION_DATE >= T2.SESSION_DATE_TA
+AND T1.SESSION_ID = T2.SESSION_ID
+AND T1.device_category = T2.dataset
+WHERE T1.SESSION_DATE BETWEEN <Parameters.Start Date> AND <Parameters.End Date>
+and experiment_seen_flag = true
+Group by 1,2,3,4,5,6,7,T1.device_category
+
+union
+
+SELECT 
+        T2.TEST_ARM,
+        'All Sessions After Activation' as experiment_seen_flag,
+        search_experience_type_reporting as search_experience_type,
+        case when search_redirect_flag = true then 'Yes' else 'No' end as search_redirect,
+        case 
+        when (<Parameters.Dimension (Search Metrics)>) = 'experiment' THEN 'Overall'
+        when IDENTIFIER(<Parameters.Dimension (Search Metrics)>)::VARCHAR = 'true' THEN 'Y'
+        when IDENTIFIER(<Parameters.Dimension (Search Metrics)>)::VARCHAR = 'false' THEN 'N'
+        else IDENTIFIER(<Parameters.Dimension (Search Metrics)>)::VARCHAR end as dimension,    
+
+        case 
+        when (<Parameters.Dimension (Search Metrics) II>) = 'experiment' THEN 'Overall'
+        when IDENTIFIER(<Parameters.Dimension (Search Metrics) II>)::VARCHAR = 'true' THEN 'Y'
+        when IDENTIFIER(<Parameters.Dimension (Search Metrics) II>)::VARCHAR = 'false' THEN 'N'
+        else IDENTIFIER(<Parameters.Dimension (Search Metrics) II>)::VARCHAR 
+        end 
+        as dimension_2,  
+        t1.dw_site_name, 
+ 
+/*        new_customer_flag, */
+        COUNT(DISTINCT T1.SEARCH_ID) AS SEARCH_VOLUME,
+        COUNT(DISTINCT T1.SESSION_ID) AS SESSION_COUNT,
+        COUNT(DISTINCT(CASE WHEN search_re_search_flag = 1 THEN T1.SEARCH_ID END)) AS RE_SEARCH_VOLUME,
+        COUNT(DISTINCT(CASE WHEN search_re_searches_different_keyword_flag = 1 THEN T1.SEARCH_ID END)) AS RE_SEARCH_DIFFERENT_KEYWORD_VOLUME,
+        COUNT(DISTINCT(CASE WHEN autocomplete_search_flag = 1 THEN T1.SEARCH_ID END)) AS AUTOCOMPLETE_SEARCH_VOLUME,
+        COUNT(DISTINCT(CASE WHEN null_result_searches_flag = 1 THEN T1.SEARCH_ID END)) AS NULL_RESULTS_SEARCH_VOLUME,
+        COUNT(DISTINCT(CASE WHEN null_results_relaxed_searches_flag = 1 THEN T1.SEARCH_ID END)) AS NULL_RESULTS_RELAXED_SEARCH_VOLUME,
+        COUNT(DISTINCT(CASE WHEN null_result_searches_flag = 1 OR null_results_relaxed_searches_flag = 1 THEN T1.SEARCH_ID END)) AS NULL_RESULTS_SEARCH_VOLUME_ALL,
+        COUNT(DISTINCT(CASE WHEN search_with_atc_flag = 1 THEN T1.SEARCH_ID END)) AS SEARCH_W_ATC_VOLUME,
+        COUNT(DISTINCT(CASE WHEN search_with_product_click_flag = 1 THEN T1.SEARCH_ID END)) AS SEARCH_W_CLICK_SEARCH_VOLUME,
+        COUNT(DISTINCT(CASE WHEN search_with_purchase_flag_last_touch = 1 THEN T1.SEARCH_ID END)) AS SEARCH_W_PURCHASE_SEARCH_VOLUME,
+
+        COUNT(DISTINCT CASE WHEN search_with_product_engagement_flag = 1 THEN t1.search_id END) AS SEARCH_W_PRODUCT_ENGAGEMENT_VOLUME,
+        COUNT(DISTINCT CASE WHEN search_with_product_ATC_flag = 1 THEN t1.search_id END) AS SEARCH_W_PRODUCT_ATC_VOLUME,
+        COUNT(DISTINCT CASE WHEN search_with_product_ADDTOAUTOSHIP_flag = 1 THEN t1.search_id END) AS SEARCH_W_PRODUCT_ADDTOAUTOSHIP_VOLUME,
+        COUNT(DISTINCT CASE WHEN search_with_product_SELECT_flag = 1 THEN t1.search_id END) AS SEARCH_W_PRODUCT_SELECT_VOLUME,
+
+        -----search volume with attributed autoship orders using last touch attribution
+        COUNT(DISTINCT(CASE WHEN order_as_flag = true and search_allocated_orders_last_touch >0 THEN T1.SEARCH_ID END)) AS search_w_autoship_purchase_search_volume,
+        COUNT(DISTINCT(CASE WHEN ncna_flag = true and search_allocated_orders_last_touch >0 THEN T1.SEARCH_ID END)) AS search_w_ncna_purchase_search_volume,
+        COUNT(DISTINCT(CASE WHEN ecna_flag = true and search_allocated_orders_last_touch >0 THEN T1.SEARCH_ID END)) AS search_w_ecna_purchase_search_volume,
+        COUNT(DISTINCT(CASE WHEN ecea_new_sub_flag = true and search_allocated_orders_last_touch >0 THEN T1.SEARCH_ID END)) AS search_w_ecea_new_sub_purchase_search_volume,
+        -------------
+        count(distinct case when new_customer_flag=true then search_id end) as new_customer_search_volume,
+        count(distinct case when new_customer_flag=false then search_id end) as existing_customer_search_volume,
+        sum(multilevel_ndcg) as multilevel_ndcg_sum,
+        sum(click_reciprocal_rank) as click_reciprocal_rank_sum,
+        count(distinct(case when t1.search_with_exit = 1 then t1.search_id end)) as SEARCH_W_EXIT,
+        sum(search_allocated_revenue) as allocated_revenue,
+        sum(search_allocated_orders) as allocated_orders,
+        sum(search_allocated_units) as allocated_units,
+        sum(search_allocated_revenue_last_touch) as allocated_revenue_last_touch,
+        sum(search_allocated_orders_last_touch) as allocated_orders_last_touch,
+        sum(search_allocated_units_last_touch) as allocated_units_last_touch,
+        count(distinct case when search_w_sponsored_ad_purchases_last_touch = 1 then search_id end) as search_w_sponsored_ad_purchases,
+        case when device_category in ('android','ios') then count(distinct case when searches_with_sponsored_ads =1 then search_id end) else sum(searches_with_sponsored_ads) end as searches_with_sponsored_ads,
+        case when device_category in ('android','ios') then count(distinct case when searches_with_sponsored_ad_product_clicks =1 then search_id end) else sum(searches_with_sponsored_ad_product_clicks) end as searches_with_sponsored_ad_product_clicks,
+        case when device_category in ('android','ios') then count(distinct case when searches_with_sponsored_ad_product_engagement =1 then search_id end) else sum(searches_with_sponsored_ad_product_engagement) end as searches_with_sponsored_ad_product_engagement,
+
+        COUNT(DISTINCT(CASE WHEN autocomplete_search_flag = 1 AND search_with_purchase_flag_last_touch = 1 THEN t1.search_id END)) AS autocomplete_search_purchase_volume
+FROM discovery_sandbox.expr_search_metrics_segment_unified T1 
+JOIN TEST_ARMS_FILTERED AS T2
+ON T1.SESSION_DATE >= T2.SESSION_DATE_TA
+AND T1.SESSION_ID = T2.SESSION_ID
+AND T1.device_category = T2.dataset
+WHERE T1.SESSION_DATE BETWEEN <Parameters.Start Date> AND <Parameters.End Date>
+Group by 1,2,3,4,5,6,7,T1.device_category
